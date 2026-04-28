@@ -1,4 +1,4 @@
-# DDNGG - 动态 DNS 更新脚本
+# DDNS - 动态 DNS 更新脚本
 
 ## 概述
 
@@ -26,4 +26,4 @@ DDNGG 是一个简单的脚本，用于自动更新您的动态 DNS（DDNS）记
 1. 下载并执行脚本
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/wyusgw/DDNGG/refs/heads/main/ddns.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/wyusgw/DDNS/refs/heads/main/ddns.sh)
