@@ -254,7 +254,7 @@ fi
 
 # 发送 Telegram 通知函数
 send_telegram_notification() {
-    local message="DDNS动态解析更新通知\n"
+    local message="DDNS 动态解析更新通知\n"
     message+="━━━━━━━━━━━━━━━━━━\n"
 
     # 遍历 Domains 数组，构建 IPv4 更新信息
@@ -262,10 +262,14 @@ send_telegram_notification() {
         message+="IPv4 更新：\n"
         for ((i=0; i<${#Domains[@]}; i++)); do
             domain="${Domains[$i]}"
-            # 获取对应的域名名称，如果没有设置则使用域名本身
-            domain_name="${Domains_Names[$i]:-$domain}"
+            # 获取对应的域名名称，如果没有设置或数组长度不匹配则使用域名本身
+            if [[ ${#Domains_Names[@]} -gt $i && -n "${Domains_Names[$i]}" ]]; then
+                domain_name="${Domains_Names[$i]}"
+            else
+                domain_name="$domain"
+            fi
             message+="  • $domain_name ($domain)\n"
-            message+="    $Old_Public_IPv4 🔜 $Public_IPv4\n"
+            message+="    $Old_Public_IPv4 -> $Public_IPv4\n"
         done
         message+="\n"
     fi
@@ -275,10 +279,14 @@ send_telegram_notification() {
         message+="IPv6 更新：\n"
         for ((i=0; i<${#Domainsv6[@]}; i++)); do
             domainv6="${Domainsv6[$i]}"
-            # 获取对应的域名名称，如果没有设置则使用域名本身
-            domainv6_name="${Domainsv6_Names[$i]:-$domainv6}"
+            # 获取对应的域名名称，如果没有设置或数组长度不匹配则使用域名本身
+            if [[ ${#Domainsv6_Names[@]} -gt $i && -n "${Domainsv6_Names[$i]}" ]]; then
+                domainv6_name="${Domainsv6_Names[$i]}"
+            else
+                domainv6_name="$domainv6"
+            fi
             message+="  • $domainv6_name ($domainv6)\n"
-            message+="    $Old_Public_IPv6 🔜 $Public_IPv6\n"
+            message+="    $Old_Public_IPv6 -> $Public_IPv6\n"
         done
         message+="\n"
     fi
@@ -332,11 +340,12 @@ go_ahead(){
   ${GREEN}4${NC}：修改要解析的域名
   ${GREEN}5${NC}：修改 Cloudflare Api
   ${GREEN}6${NC}：配置 Telegram 通知
-  ${GREEN}7${NC}：更改 DDNS 运行时间"  # 添加新选项
+  ${GREEN}7${NC}：更改 DDNS 运行时间
+  ${GREEN}8${NC}：修改域名名称标识"  # 添加新选项
     echo
     read -p "选项: " option
-    until [[ "$option" =~ ^[0-7]$ ]]; do  # 更新有效选项范围
-        echo -e "${Error}请输入正确的数字 [0-7]"
+    until [[ "$option" =~ ^[0-8]$ ]]; do  # 更新有效选项范围
+        echo -e "${Error}请输入正确的数字 [0-8]"
         echo
         exit 1
     done
@@ -391,6 +400,10 @@ go_ahead(){
         7)
             set_ddns_run_interval  # 调用新函数以更改 DDNS 运行时间
             sleep 2
+            check_ddns_install
+        ;;
+        8)
+            set_domain_names
             check_ddns_install
         ;;
     esac
@@ -534,6 +547,97 @@ set_domain() {
         # 更新 .config 文件中的 ipv6_set 为 false
         sed -i 's/^#\?ipv6_set=".*"/ipv6_set="false"/g' /etc/DDNS/.config
     fi
+}
+
+# 修改域名名称标识
+set_domain_names() {
+    echo -e "${Info}开始修改域名名称标识..."
+    echo
+
+    # 检查配置文件是否存在
+    if [ ! -f "/etc/DDNS/.config" ]; then
+        echo -e "${Error}配置文件不存在，请先安装 DDNS！"
+        return 1
+    fi
+
+    # 加载当前配置
+    source /etc/DDNS/.config
+
+    # 显示当前配置
+    echo -e "${Info}当前 IPv4 域名配置："
+    for ((i=0; i<${#Domains[@]}; i++)); do
+        domain="${Domains[$i]}"
+        if [[ ${#Domains_Names[@]} -gt $i && -n "${Domains_Names[$i]}" ]]; then
+            domain_name="${Domains_Names[$i]}"
+        else
+            domain_name="$domain"
+        fi
+        echo -e "  ${GREEN}$((i+1))${NC}. $domain_name ($domain)"
+    done
+    echo
+
+    # 修改 IPv4 域名名称
+    if [ ${#Domains[@]} -gt 0 ]; then
+        echo -e "${Tip}现在修改 IPv4 域名名称标识："
+        declare -a new_domains_names
+        for ((i=0; i<${#Domains[@]}; i++)); do
+            domain="${Domains[$i]}"
+            current_name="${Domains_Names[$i]:-$domain}"
+            echo -e "${Tip}域名: ${GREEN}$domain${NC}"
+            echo -e "${Tip}当前名称: ${YELLOW}$current_name${NC}"
+            read -rp "新名称标识 (留空保持不变): " new_name
+            if [ -n "$new_name" ]; then
+                new_domains_names+=("$new_name")
+            else
+                new_domains_names+=("$current_name")
+            fi
+            echo
+        done
+
+        # 更新配置文件
+        sed -i '/^Domains_Names=/c\Domains_Names=('"${new_domains_names[*]}"')' /etc/DDNS/.config
+        echo -e "${Info}IPv4 域名名称标识已更新！"
+        echo
+    fi
+
+    # 显示当前 IPv6 配置
+    if [ "$ipv6_set" == "true" ] && [ ${#Domainsv6[@]} -gt 0 ]; then
+        echo -e "${Info}当前 IPv6 域名配置："
+        for ((i=0; i<${#Domainsv6[@]}; i++)); do
+            domainv6="${Domainsv6[$i]}"
+            if [[ ${#Domainsv6_Names[@]} -gt $i && -n "${Domainsv6_Names[$i]}" ]]; then
+                domainv6_name="${Domainsv6_Names[$i]}"
+            else
+                domainv6_name="$domainv6"
+            fi
+            echo -e "  ${GREEN}$((i+1))${NC}. $domainv6_name ($domainv6)"
+        done
+        echo
+
+        # 修改 IPv6 域名名称
+        echo -e "${Tip}现在修改 IPv6 域名名称标识："
+        declare -a new_domainsv6_names
+        for ((i=0; i<${#Domainsv6[@]}; i++)); do
+            domainv6="${Domainsv6[$i]}"
+            current_name="${Domainsv6_Names[$i]:-$domainv6}"
+            echo -e "${Tip}域名: ${GREEN}$domainv6${NC}"
+            echo -e "${Tip}当前名称: ${YELLOW}$current_name${NC}"
+            read -rp "新名称标识 (留空保持不变): " new_name
+            if [ -n "$new_name" ]; then
+                new_domainsv6_names+=("$new_name")
+            else
+                new_domainsv6_names+=("$current_name")
+            fi
+            echo
+        done
+
+        # 更新配置文件
+        sed -i '/^Domainsv6_Names=/c\Domainsv6_Names=('"${new_domainsv6_names[*]}"')' /etc/DDNS/.config
+        echo -e "${Info}IPv6 域名名称标识已更新！"
+        echo
+    fi
+
+    echo -e "${Info}域名名称标识修改完成！"
 }
 
 # 设置Telegram参数
