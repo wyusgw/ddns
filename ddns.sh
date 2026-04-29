@@ -15,7 +15,7 @@ cop_info(){
 clear
 echo -e "${GREEN}##################################
 #      DDNS 一键脚本 v1.8                 #
-#            作者: 小吃                     #
+#            作者: wyusgw                     #
 #         $(date '+%Y-%m-%d %H:%M:%S')    #
 ##################################${NC}"
 echo
@@ -76,7 +76,7 @@ check_curl() {
 # 开始安装DDNS
 install_ddns(){
     if [ ! -f "/usr/bin/ddns" ]; then
-        curl -o /usr/bin/ddns https://raw.githubusercontent.com/wyusgw/DDNGG/refs/heads/main/ddns.sh && chmod +x /usr/bin/ddns
+        curl -o /usr/bin/ddns https://raw.githubusercontent.com/wyusgw/ddns/refs/heads/main/ddns.sh && chmod +x /usr/bin/ddns
     fi
     mkdir -p /etc/DDNS
     cat <<'EOF' > /etc/DDNS/DDNS
@@ -167,8 +167,10 @@ EOF
     cat <<'EOF' > /etc/DDNS/.config
 # 多域名支持
 Domains=("your_domain1.com" "your_domain2.com")     # 你要解析的IPv4域名数组
+Domains_Names=("服务器1" "服务器2")                 # 对应的IPv4域名名称标识
 ipv6_set="setting"                                    # 开启 IPv6 解析
 Domainsv6=("your_domainv6_1.com" "your_domainv6_2.com")  # 你要解析的IPv6域名数组
+Domainsv6_Names=("服务器1-IPv6" "服务器2-IPv6")     # 对应的IPv6域名名称标识
 Email="your_email@gmail.com"                       # 你在 Cloudflare 注册的邮箱
 Api_key="your_api_key"                             # 你的 Cloudflare API 密钥
 
@@ -252,34 +254,42 @@ fi
 
 # 发送 Telegram 通知函数
 send_telegram_notification() {
-    local message=""
+    local message="DDNS动态解析更新通知\n"
+    message+="━━━━━━━━━━━━━━━━━━\n"
 
-    # 遍历 Domains 数组，构建域名部分
-    for domain in "${Domains[@]}"; do
-        message+="$domain "
-    done
-
-    # 添加 IPv4 更新信息
-    message+="IPv4更新 $Old_Public_IPv4 🔜 $Public_IPv4 。"
+    # 遍历 Domains 数组，构建 IPv4 更新信息
+    if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
+        message+="IPv4 更新：\n"
+        for ((i=0; i<${#Domains[@]}; i++)); do
+            domain="${Domains[$i]}"
+            # 获取对应的域名名称，如果没有设置则使用域名本身
+            domain_name="${Domains_Names[$i]:-$domain}"
+            message+="  • $domain_name ($domain)\n"
+            message+="    $Old_Public_IPv4 🔜 $Public_IPv4\n"
+        done
+        message+="\n"
+    fi
 
     # 如果 ipv6_set 为 true，则添加 IPv6 更新信息
-    if [ "$ipv6_set" == "true" ]; then
-        # 检查 Domains 和 Domainsv6 是否相同
-        if [ "${Domains[*]}" != "${Domainsv6[*]}" ]; then
-            # 遍历 Domainsv6 数组，构建 IPv6 域名部分
-            for domainv6 in "${Domainsv6[@]}"; do
-                message+="$domainv6 "
-            done
-        fi
-
-        # 添加 IPv6 更新信息
-        message+="IPv6更新 $Old_Public_IPv6 🔜 $Public_IPv6 。"
+    if [ "$ipv6_set" == "true" ] && [[ -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" ]]; then
+        message+="IPv6 更新：\n"
+        for ((i=0; i<${#Domainsv6[@]}; i++)); do
+            domainv6="${Domainsv6[$i]}"
+            # 获取对应的域名名称，如果没有设置则使用域名本身
+            domainv6_name="${Domainsv6_Names[$i]:-$domainv6}"
+            message+="  • $domainv6_name ($domainv6)\n"
+            message+="    $Old_Public_IPv6 🔜 $Public_IPv6\n"
+        done
+        message+="\n"
     fi
+
+    message+="━━━━━━━━━━━━━━━━━━\n"
+    message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
     # 发送通知
     curl -s -X POST "https://api.telegram.org/bot$Telegram_Bot_Token/sendMessage" \
         -d "chat_id=$Telegram_Chat_ID" \
-        -d "text=$message"
+        --data-urlencode "text=$message"
 }
 
 EOF
@@ -435,6 +445,23 @@ set_domain() {
             echo
             # 更新 .config 文件中的 IPv4 域名数组，保持原位置修改
             sed -i '/^Domains=/c\Domains=('"${Domains[*]}"')' /etc/DDNS/.config
+            
+            # 为 IPv4 域名设置名称标识
+            echo -e "${Tip}现在为IPv4域名设置名称标识（用于Telegram通知中显示）"
+            declare -a Domains_Names
+            for ((i=0; i<${#Domains[@]}; i++)); do
+                echo -e "${Tip}请为域名 '${GREEN}${Domains[$i]}${NC}' 设置一个名称标识 (例如：主服务器、备用服务器等，或按回车使用域名作为标识)"
+                read -rp "名称标识: " domain_name
+                if [ -z "$domain_name" ]; then
+                    Domains_Names+=("${Domains[$i]}")
+                else
+                    Domains_Names+=("$domain_name")
+                fi
+            done
+            echo -e "${Info}IPv4域名名称标识为: ${RED_ground}${Domains_Names[*]}${NC}"
+            echo
+            # 更新 .config 文件中的 IPv4 域名名称标识数组
+            sed -i '/^Domains_Names=/c\Domains_Names=('"${Domains_Names[*]}"')' /etc/DDNS/.config
         fi
     else
         echo -e "${Info}未检测到IPv4地址，跳过IPv4域名设置。"
@@ -470,6 +497,23 @@ set_domain() {
                     echo
                     # 更新 .config 文件中的 IPv6 域名数组，保持原位置修改
                     sed -i '/^Domainsv6=/c\Domainsv6=('"${Domainsv6[*]}"')' /etc/DDNS/.config
+                    
+                    # 为 IPv6 域名设置名称标识
+                    echo -e "${Tip}现在为IPv6域名设置名称标识（用于Telegram通知中显示）"
+                    declare -a Domainsv6_Names
+                    for ((i=0; i<${#Domainsv6[@]}; i++)); do
+                        echo -e "${Tip}请为域名 '${GREEN}${Domainsv6[$i]}${NC}' 设置一个名称标识 (例如：主服务器-IPv6、备用服务器-IPv6等，或按回车使用域名作为标识)"
+                        read -rp "名称标识: " domainv6_name
+                        if [ -z "$domainv6_name" ]; then
+                            Domainsv6_Names+=("${Domainsv6[$i]}")
+                        else
+                            Domainsv6_Names+=("$domainv6_name")
+                        fi
+                    done
+                    echo -e "${Info}IPv6域名名称标识为: ${RED_ground}${Domainsv6_Names[*]}${NC}"
+                    echo
+                    # 更新 .config 文件中的 IPv6 域名名称标识数组
+                    sed -i '/^Domainsv6_Names=/c\Domainsv6_Names=('"${Domainsv6_Names[*]}"')' /etc/DDNS/.config
                 fi
                 break
             elif [[ "$enable_ipv6" =~ ^[Nn]$ ]]; then

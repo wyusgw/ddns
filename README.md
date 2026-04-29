@@ -11,6 +11,8 @@ DDNGG 是一个简单的脚本，用于自动更新您的动态 DNS（DDNS）记
 - 自动更新 DNS 记录。
 - 支持自定义 DNS 提供商。
 - 使用简单，快速配置。
+- ✨ **新增**：支持为每个域名设置自定义名称标识，改进 Telegram 通知显示
+- ✨ **新增**：Telegram 通知新增时间戳和结构化格式
 
 ## 安装方法
 
@@ -26,4 +28,4 @@ DDNGG 是一个简单的脚本，用于自动更新您的动态 DNS（DDNS）记
 1. 下载并执行脚本
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/wyusgw/DDNS/refs/heads/main/ddns.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/wyusgw/ddns/refs/heads/main/ddns.sh)
