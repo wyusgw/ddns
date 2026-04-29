@@ -270,9 +270,9 @@ send_telegram_notification() {
             else
                 domain_name="$domain"
             fi
-            message+="- 名称: $domain_name${nl}"
-            message+="  域名: $domain${nl}"
-            message+="  变更: $old_ipv4_display -> $Public_IPv4${nl}${nl}"
+            message+="名称: $domain_name${nl}"
+            message+="域名: $domain${nl}"
+            message+="变更: $old_ipv4_display 🔜 $Public_IPv4${nl}${nl}"
         done
     fi
 
@@ -288,9 +288,9 @@ send_telegram_notification() {
             else
                 domainv6_name="$domainv6"
             fi
-            message+="- 名称: $domainv6_name${nl}"
-            message+="  域名: $domainv6${nl}"
-            message+="  变更: $old_ipv6_display -> $Public_IPv6${nl}${nl}"
+            message+="名称: $domainv6_name${nl}"
+            message+="域名: $domainv6${nl}"
+            message+="变更: $old_ipv6_display 🔜 $Public_IPv6${nl}${nl}"
         done
     fi
 
