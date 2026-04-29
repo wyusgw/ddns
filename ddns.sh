@@ -254,12 +254,12 @@ fi
 
 # 发送 Telegram 通知函数
 send_telegram_notification() {
-    local message="DDNS 动态解析更新通知\n"
-    message+="━━━━━━━━━━━━━━━━━━\n"
+    local message="DDNS 更新通知\n"
+    message+="━━━━━━━━━━━━━━━━━━━━\n"
 
     # 遍历 Domains 数组，构建 IPv4 更新信息
     if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
-        message+="IPv4 更新：\n"
+        message+="IPv4 地址更新\n"
         for ((i=0; i<${#Domains[@]}; i++)); do
             domain="${Domains[$i]}"
             # 获取对应的域名名称，如果没有设置或数组长度不匹配则使用域名本身
@@ -268,15 +268,15 @@ send_telegram_notification() {
             else
                 domain_name="$domain"
             fi
-            message+="  • $domain_name ($domain)\n"
-            message+="    $Old_Public_IPv4 -> $Public_IPv4\n"
+            message+="域名: $domain_name\n"
+            message+="地址: $domain\n"
+            message+="更新: $Old_Public_IPv4 -> $Public_IPv4\n\n"
         done
-        message+="\n"
     fi
 
     # 如果 ipv6_set 为 true，则添加 IPv6 更新信息
     if [ "$ipv6_set" == "true" ] && [[ -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" ]]; then
-        message+="IPv6 更新：\n"
+        message+="IPv6 地址更新\n"
         for ((i=0; i<${#Domainsv6[@]}; i++)); do
             domainv6="${Domainsv6[$i]}"
             # 获取对应的域名名称，如果没有设置或数组长度不匹配则使用域名本身
@@ -285,14 +285,14 @@ send_telegram_notification() {
             else
                 domainv6_name="$domainv6"
             fi
-            message+="  • $domainv6_name ($domainv6)\n"
-            message+="    $Old_Public_IPv6 -> $Public_IPv6\n"
+            message+="域名: $domainv6_name\n"
+            message+="地址: $domainv6\n"
+            message+="更新: $Old_Public_IPv6 -> $Public_IPv6\n\n"
         done
-        message+="\n"
     fi
 
-    message+="━━━━━━━━━━━━━━━━━━\n"
-    message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
+    message+="━━━━━━━━━━━━━━━━━━━━\n"
+    message+="时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
     # 发送通知
     curl -s -X POST "https://api.telegram.org/bot$Telegram_Bot_Token/sendMessage" \
