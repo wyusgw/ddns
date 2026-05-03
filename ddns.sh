@@ -6,18 +6,41 @@ YELLOW="\033[0;33m"
 NC="\033[0m"
 GREEN_ground="\033[42;37m"
 RED_ground="\033[41;37m"
+
 Info="${GREEN}[信息]${NC}"
 Error="${RED}[错误]${NC}"
 Tip="${YELLOW}[提示]${NC}"
 
+WIDTH=34
+
+center_line() {
+    local text="$1"
+    local len=${#text}
+    local padding=$(( (WIDTH - 2 - len) / 2 ))
+    local extra=$(( (WIDTH - 2 - len) % 2 ))
+
+    printf "#%*s%s%*s#\n" \
+        "$padding" "" \
+        "$text" \
+        "$((padding + extra))" ""
+}
+
+border() {
+    printf "%${WIDTH}s\n" | tr ' ' '#'
+}
+
 cop_info(){
-clear
-echo -e "${GREEN}##################################
-#      DDNS 一键脚本 v2.0       #
-#            作者: wyusgw         #
-#   $(date '+%Y-%m-%d %H:%M:%S')  #
-##################################${NC}"
-echo
+    clear
+
+    now_time=$(date '+%Y-%m-%d %H:%M:%S')
+
+    echo -e "${GREEN}"
+    border
+    center_line "DDNS 一键脚本 v2.0"
+    center_line "$now_time"
+    border
+    echo -e "${NC}"
+    echo
 }
 
 quote_array() {
@@ -142,7 +165,7 @@ cf_api() {
 send_telegram_notification() {
     local nl=$'\n'
     local message="DDNS 更新通知${nl}"
-    message+="====================${nl}"
+    message+="────────────────────${nl}"
 
     if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
         local old_ipv4_display="${Old_Public_IPv4:-未记录}"
@@ -156,7 +179,7 @@ send_telegram_notification() {
             fi
             message+="名称: $domain_name${nl}"
             message+="域名: $domain${nl}"
-            message+="变更: $old_ipv4_display -> $Public_IPv4${nl}${nl}"
+            message+="变更: $old_ipv4_display -> $Public_IPv4${nl}"
         done
     fi
 
@@ -172,14 +195,14 @@ send_telegram_notification() {
             fi
             message+="名称: $domainv6_name${nl}"
             message+="域名: $domainv6${nl}"
-            message+="变更: $old_ipv6_display -> $Public_IPv6${nl}${nl}"
+            message+="变更: $old_ipv6_display -> $Public_IPv6${nl}"
         done
     fi
 
-    message+="====================${nl}"
+    message+="────────────────────${nl}"
     message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
-    # 使用 jq 安全构建 JSON，避免特殊字符转义问题
+    # 使用 jq 安全构建 JSON，parse_mode 不传（纯文本），避免特殊字符被误解析
     local json_payload
     json_payload=$(jq -n \
         --arg chat_id "$Telegram_Chat_ID" \
