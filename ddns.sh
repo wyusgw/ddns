@@ -13,8 +13,9 @@ Tip="${YELLOW}[提示]${NC}"
 cop_info(){
 clear
 echo -e "${GREEN}##################################
-#      DDNS 一键脚本 v2.0 #
-#   $(date '+%Y-%m-%d %H:%M:%S') #
+#      DDNS 一键脚本 v2.0       #
+#            作者: wyusgw         #
+#   $(date '+%Y-%m-%d %H:%M:%S')  #
 ##################################${NC}"
 echo
 }
@@ -174,6 +175,7 @@ send_telegram_notification() {
             message+="变更: $old_ipv6_display -> $Public_IPv6${nl}${nl}"
         done
     fi
+
     message+="====================${nl}"
     message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -1003,6 +1005,12 @@ show_menu(){
         echo
 
         read -rp "选项 [0-15]： " option
+
+        if [[ -z "$option" ]]; then
+            echo -e "${RED}请输入正确的数字 [0-15]${NC}"
+            sleep 1
+            exit 0
+        fi
 
         if ! [[ "$option" =~ ^([0-9]|1[0-5])$ ]]; then
             echo -e "${RED}请输入正确的数字 [0-15]${NC}"
