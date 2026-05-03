@@ -6,41 +6,17 @@ YELLOW="\033[0;33m"
 NC="\033[0m"
 GREEN_ground="\033[42;37m"
 RED_ground="\033[41;37m"
-
 Info="${GREEN}[信息]${NC}"
 Error="${RED}[错误]${NC}"
 Tip="${YELLOW}[提示]${NC}"
 
-WIDTH=34
-
-center_line() {
-    local text="$1"
-    local len=${#text}
-    local padding=$(( (WIDTH - 2 - len) / 2 ))
-    local extra=$(( (WIDTH - 2 - len) % 2 ))
-
-    printf "#%*s%s%*s#\n" \
-        "$padding" "" \
-        "$text" \
-        "$((padding + extra))" ""
-}
-
-border() {
-    printf "%${WIDTH}s\n" | tr ' ' '#'
-}
-
 cop_info(){
-    clear
-
-    now_time=$(date '+%Y-%m-%d %H:%M:%S')
-
-    echo -e "${GREEN}"
-    border
-    center_line "DDNS 一键脚本 v2.0"
-    center_line "$now_time"
-    border
-    echo -e "${NC}"
-    echo
+clear
+echo -e "${GREEN}##################################
+#      DDNS 一键脚本 v2.0
+#   $(date '+%Y-%m-%d %H:%M:%S')
+##################################${NC}"
+echo
 }
 
 quote_array() {
