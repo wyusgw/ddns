@@ -68,8 +68,6 @@ check_curl() {
                 echo -e "${RED}在 Alpine 上安装 GNU grep 失败，请手动安装后重新运行脚本。${NC}"
                 exit 1
             fi
-        else
-            echo -e "${GREEN}GNU grep 已经安装。${NC}"
         fi
     fi
 }
@@ -90,6 +88,9 @@ RED="\033[31m"
 GREEN="\033[32m"
 YELLOW="\033[0;33m"
 NC="\033[0m"
+
+LAST_RUN_FILE="/etc/DDNS/.last_run"
+LOG_FILE="/etc/DDNS/ddns.log"
 
 cf_api() {
     local method="$1"
@@ -161,6 +162,18 @@ send_telegram_notification() {
     curl -s -X POST "https://api.telegram.org/bot$Telegram_Bot_Token/sendMessage" \
         -d "chat_id=$Telegram_Chat_ID" \
         --data-urlencode "text=$message" >/dev/null 2>&1
+}
+
+record_last_run() {
+    mkdir -p /etc/DDNS
+    local now
+    now="$(date '+%Y-%m-%d %H:%M:%S')"
+    {
+        echo "LAST_RUN_TIME=\"$now\""
+        echo "LAST_RUN_IPV4=\"${Public_IPv4:-}\""
+        echo "LAST_RUN_IPV6=\"${Public_IPv6:-}\""
+    } > "$LAST_RUN_FILE"
+    echo "$now IPv4=${Public_IPv4:-none} IPv6=${Public_IPv6:-none}" >> "$LOG_FILE"
 }
 
 Old_Public_IPv4="${Old_Public_IPv4:-}"
@@ -256,6 +269,8 @@ fi
 if [[ -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" ]]; then
     sed -i "s/^Old_Public_IPv6=.*/Old_Public_IPv6=\"$Public_IPv6\"/" /etc/DDNS/.config
 fi
+
+record_last_run
 EOF_DDNS_SCRIPT
 
     cat <<'EOF_DDNS_CONFIG' > /etc/DDNS/.config
@@ -276,6 +291,7 @@ EOF_DDNS_CONFIG
 
     chmod +x /etc/DDNS/DDNS
     chmod +x /etc/DDNS/.config
+    touch /etc/DDNS/ddns.log
     echo -e "${Info}DDNS 安装完成！"
     echo
 }
@@ -288,15 +304,10 @@ check_ddns_status() {
             ddns_status=dead
         fi
     else
-        if [[ -f "/etc/systemd/system/ddns.timer" ]]; then
-            STatus=$(systemctl status ddns.timer 2>/dev/null | grep Active | awk '{print $3}' | cut -d "(" -f2 | cut -d ")" -f1)
-            if [[ $STatus =~ "waiting" || $STatus =~ "running" ]]; then
-                ddns_status=running
-            else
-                ddns_status=dead
-            fi
+        if [[ -f "/etc/systemd/system/ddns.timer" ]] && systemctl is-active --quiet ddns.timer 2>/dev/null; then
+            ddns_status=running
         else
-            ddns_status=not_installed
+            ddns_status=dead
         fi
     fi
 }
@@ -321,14 +332,14 @@ restart_ddns() {
         if [ -n "$current_cron" ]; then
             crontab -l 2>/dev/null | grep -v "/bin/bash /etc/DDNS/DDNS" | crontab -
             new_cron="${current_cron} >/dev/null 2>&1"
-            (crontab -l; echo "$new_cron") | crontab -
+            (crontab -l 2>/dev/null; echo "$new_cron") | crontab -
             echo -e "${Info}DDNS 已重启！"
         else
             echo -e "${Error}未找到现有的 cron 任务，无法重启 DDNS。"
             read -rp "是否要添加一个新的 DDNS 任务（每 2 分钟）？[y/n] " add_cron
             if [[ "$add_cron" == "y" || "$add_cron" == "Y" ]]; then
                 new_cron="*/2 * * * * /bin/bash /etc/DDNS/DDNS >/dev/null 2>&1"
-                (crontab -l; echo "$new_cron") | crontab -
+                (crontab -l 2>/dev/null; echo "$new_cron") | crontab -
                 echo -e "${Info}已添加新的 DDNS 任务，每 2 分钟运行一次！"
             fi
         fi
@@ -418,7 +429,7 @@ set_ddns_run_interval() {
         echo -e "${Info}正在更新 DDNS 定时器..."
         systemctl stop ddns.timer >/dev/null 2>&1
         systemctl disable ddns.timer >/dev/null 2>&1
-        sed -i "s/OnUnitActiveSec=.*s/OnUnitActiveSec=${interval}m/" /etc/systemd/system/ddns.timer
+        sed -i "s/OnUnitActiveSec=.*/OnUnitActiveSec=${interval}m/" /etc/systemd/system/ddns.timer
         systemctl daemon-reload
         systemctl enable --now ddns.timer >/dev/null 2>&1
         echo -e "${Info}DDNS 定时器已设置为每 ${interval} 分钟运行一次！"
@@ -456,6 +467,180 @@ disable_autostart() {
         systemctl daemon-reload >/dev/null 2>&1
         echo -e "${Info}已关闭 Debian/Ubuntu 开机自启。"
     fi
+}
+
+check_autostart_status() {
+    if grep -qiE "alpine" /etc/os-release; then
+        local crond_autostart="未开启"
+        local cron_task="未设置"
+
+        if command -v rc-update >/dev/null 2>&1; then
+            if rc-update show default 2>/dev/null | grep -qE '(^|[[:space:]])crond([[:space:]]|$)'; then
+                crond_autostart="已开启"
+            fi
+        fi
+
+        if crontab -l 2>/dev/null | grep -q "/bin/bash /etc/DDNS/DDNS"; then
+            cron_task="已存在"
+        fi
+
+        echo -e "${Tip}开机自启状态：${GREEN}${crond_autostart}${NC}（crond） / ${GREEN}${cron_task}${NC}（任务）"
+    else
+        local timer_status="未开启"
+        local service_status="未开启"
+
+        if systemctl is-enabled ddns.timer >/dev/null 2>&1; then
+            timer_status="已开启"
+        fi
+
+        if systemctl is-enabled ddns.service >/dev/null 2>&1; then
+            service_status="已开启"
+        fi
+
+        echo -e "${Tip}开机自启状态：${GREEN}${timer_status}${NC}（ddns.timer） / ${GREEN}${service_status}${NC}（ddns.service）"
+    fi
+}
+
+check_config_status() {
+    if [ -f "/etc/DDNS/.config" ]; then
+        echo -e "${Info}配置文件：${GREEN}存在${NC}"
+    else
+        echo -e "${Info}配置文件：${RED}不存在${NC}"
+    fi
+}
+
+check_service_status() {
+    if grep -qiE "alpine" /etc/os-release; then
+        if crontab -l 2>/dev/null | grep -q "/bin/bash /etc/DDNS/DDNS"; then
+            echo -e "${Info}定时任务状态：${GREEN}已设置${NC}"
+        else
+            echo -e "${Info}定时任务状态：${RED}未设置${NC}"
+        fi
+    else
+        if systemctl is-active --quiet ddns.timer 2>/dev/null; then
+            echo -e "${Info}ddns.timer：${GREEN}运行中${NC}"
+        else
+            echo -e "${Info}ddns.timer：${RED}未运行${NC}"
+        fi
+
+        if systemctl is-enabled --quiet ddns.timer 2>/dev/null; then
+            echo -e "${Info}ddns.timer 开机自启：${GREEN}已开启${NC}"
+        else
+            echo -e "${Info}ddns.timer 开机自启：${RED}未开启${NC}"
+        fi
+
+        if systemctl is-enabled --quiet ddns.service 2>/dev/null; then
+            echo -e "${Info}ddns.service 开机自启：${GREEN}已开启${NC}"
+        else
+            echo -e "${Info}ddns.service 开机自启：${RED}未开启${NC}"
+        fi
+    fi
+}
+
+check_last_run() {
+    if [ -f "/etc/DDNS/.last_run" ]; then
+        source /etc/DDNS/.last_run
+        echo -e "${Info}最近执行时间：${GREEN}${LAST_RUN_TIME:-未知}${NC}"
+        if [ -n "${LAST_RUN_IPV4:-}" ] || [ -n "${LAST_RUN_IPV6:-}" ]; then
+            echo -e "${Info}最近执行结果：${GREEN}IPv4=${LAST_RUN_IPV4:-无}，IPv6=${LAST_RUN_IPV6:-无}${NC}"
+        fi
+    else
+        echo -e "${Info}最近执行时间：${YELLOW}暂无记录${NC}"
+    fi
+}
+
+check_ddns_last_run() {
+    check_last_run
+}
+
+check_schedule_config() {
+    echo -e "${Tip}========== 当前定时任务配置 =========="
+
+    if grep -qiE "alpine" /etc/os-release; then
+        local cron_line
+        cron_line=$(crontab -l 2>/dev/null | grep "/bin/bash /etc/DDNS/DDNS" | head -n 1)
+
+        if [ -n "$cron_line" ]; then
+            echo -e "${Info}Cron任务：${GREEN}已存在${NC}"
+            echo -e "${Info}任务内容：${YELLOW}${cron_line}${NC}"
+
+            local cron_min
+            cron_min=$(echo "$cron_line" | awk '{print $1}')
+            if [[ "$cron_min" =~ ^\*/([0-9]+)$ ]]; then
+                echo -e "${Info}运行间隔：${GREEN}每 ${BASH_REMATCH[1]} 分钟${NC}"
+            else
+                echo -e "${Info}运行间隔：${YELLOW}无法自动解析${NC}"
+            fi
+        else
+            echo -e "${Info}Cron任务：${RED}未设置${NC}"
+        fi
+    else
+        if [ -f "/etc/systemd/system/ddns.service" ]; then
+            echo -e "${Info}ddns.service：${GREEN}存在${NC}"
+            echo -e "${Info}ddns.service 内容："
+            grep -E '^(Description|Type|WorkingDirectory|ExecStart|WantedBy)' /etc/systemd/system/ddns.service 2>/dev/null | sed 's/^/  /'
+        else
+            echo -e "${Info}ddns.service：${RED}不存在${NC}"
+        fi
+
+        if [ -f "/etc/systemd/system/ddns.timer" ]; then
+            echo -e "${Info}ddns.timer：${GREEN}存在${NC}"
+            echo -e "${Info}ddns.timer 内容："
+            grep -E '^(Description|OnUnitActiveSec|Unit|WantedBy)' /etc/systemd/system/ddns.timer 2>/dev/null | sed 's/^/  /'
+
+            local interval
+            interval=$(grep -E '^OnUnitActiveSec=' /etc/systemd/system/ddns.timer 2>/dev/null | cut -d'=' -f2)
+            if [ -n "$interval" ]; then
+                echo -e "${Info}运行间隔：${GREEN}${interval}${NC}"
+            else
+                echo -e "${Info}运行间隔：${YELLOW}未识别${NC}"
+            fi
+        else
+            echo -e "${Info}ddns.timer：${RED}不存在${NC}"
+        fi
+
+        echo -e "${Info}systemd启用状态："
+        if systemctl is-enabled --quiet ddns.timer 2>/dev/null; then
+            echo -e "  ddns.timer：${GREEN}enabled${NC}"
+        else
+            echo -e "  ddns.timer：${RED}disabled${NC}"
+        fi
+
+        if systemctl is-enabled --quiet ddns.service 2>/dev/null; then
+            echo -e "  ddns.service：${GREEN}enabled${NC}"
+        else
+            echo -e "  ddns.service：${RED}disabled${NC}"
+        fi
+    fi
+
+    echo -e "${Tip}======================================"
+}
+
+show_status_summary() {
+    echo -e "${Tip}========== 状态查询 =========="
+    check_config_status
+    check_ddns_status
+    if [[ "$ddns_status" == "running" ]]; then
+        echo -e "${Info}DDNS 运行状态：${GREEN}运行中${NC}"
+    else
+        echo -e "${Info}DDNS 运行状态：${RED}未运行${NC}"
+    fi
+    check_autostart_status
+    check_service_status
+    check_last_run
+    echo -e "${Tip}=============================="
+}
+
+show_recent_run() {
+    echo -e "${Tip}========== 最近一次执行记录 =========="
+    check_last_run
+    if [ -f "/etc/DDNS/ddns.log" ]; then
+        echo -e "${Info}最近日志："
+        tail -n 5 /etc/DDNS/ddns.log | sed 's/^/  /'
+    else
+        echo -e "${Info}最近日志：${YELLOW}暂无日志${NC}"
+    fi
+    echo -e "${Tip}======================================"
 }
 
 set_cloudflare_api(){
@@ -742,6 +927,7 @@ show_menu(){
         else
             echo -e "${Tip}DDNS：${GREEN}已安装${NC} 但 ${RED}未启动${NC}"
         fi
+        check_autostart_status
         echo
         echo -e "${Tip}启动菜单"
         echo -e "  ${GREEN}1${NC}：启动 DDNS"
@@ -755,9 +941,31 @@ show_menu(){
         echo -e "  ${GREEN}9${NC}：卸载 DDNS"
         echo -e "  ${GREEN}10${NC}：开启开机自启"
         echo -e "  ${GREEN}11${NC}：关闭开机自启"
+        echo -e "  ${GREEN}12${NC}：查看最近一次执行记录"
+        echo -e "  ${GREEN}13${NC}：查看全部状态"
+        echo -e "  ${GREEN}14${NC}：查看定时任务配置"
         echo -e "  ${GREEN}0${NC}：退出"
         echo
-        read -rp "选项: " option
+
+        read -rp "选项 [0-14]： " option
+
+        if [ -z "$option" ]; then
+            echo -e "${Tip}未输入任何选项，脚本即将退出..."
+            sleep 1
+            exit 0
+        fi
+
+        if ! [[ "$option" =~ ^[0-9]+$ ]]; then
+            echo -e "${Error}请输入正确的数字 [0-14]！"
+            sleep 1
+            continue
+        fi
+
+        if [ "$option" -lt 0 ] || [ "$option" -gt 14 ]; then
+            echo -e "${Error}请输入正确的数字 [0-14]！"
+            sleep 1
+            continue
+        fi
 
         case "$option" in
             1)
@@ -807,11 +1015,28 @@ show_menu(){
                 disable_autostart
                 sleep 1
             ;;
+            12)
+                show_recent_run
+                read -rp "按回车返回菜单..." dummy
+                sleep 1
+            ;;
+            13)
+                show_status_summary
+                read -rp "按回车返回菜单..." dummy
+                sleep 1
+            ;;
+            14)
+                check_schedule_config
+                read -rp "按回车返回菜单..." dummy
+                sleep 1
+            ;;
             0)
+                echo -e "${Tip}脚本即将退出..."
+                sleep 1
                 exit 0
             ;;
             *)
-                echo -e "${Error}无效选项！"
+                echo -e "${Error}请输入正确的数字 [0-14]！"
                 sleep 1
             ;;
         esac
