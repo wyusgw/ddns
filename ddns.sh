@@ -14,7 +14,6 @@ cop_info(){
 clear
 echo -e "${GREEN}##################################
 #      DDNS 一键脚本 v2.0       #
-#            作者: wyusgw         #
 #   $(date '+%Y-%m-%d %H:%M:%S')  #
 ##################################${NC}"
 echo
@@ -54,6 +53,25 @@ check_curl() {
             apk add curl
             if [ $? -ne 0 ]; then
                 echo -e "${RED}在 Alpine 上安装 curl 失败，请手动安装后重新运行脚本。${NC}"
+                exit 1
+            fi
+        fi
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        echo -e "${YELLOW}未检测到 jq，正在安装 jq...${NC}"
+        if grep -qiE "debian|ubuntu" /etc/os-release; then
+            apt update
+            apt install -y jq
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}在 Debian/Ubuntu 上安装 jq 失败，请手动安装后重新运行脚本。${NC}"
+                exit 1
+            fi
+        elif grep -qiE "alpine" /etc/os-release; then
+            apk update
+            apk add jq
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}在 Alpine 上安装 jq 失败，请手动安装后重新运行脚本。${NC}"
                 exit 1
             fi
         fi
@@ -119,6 +137,7 @@ cf_api() {
     fi
 }
 
+# 使用 jq 构建 Telegram 通知 JSON，正确处理特殊字符
 send_telegram_notification() {
     local nl=$'\n'
     local message="DDNS 更新通知${nl}"
@@ -155,13 +174,19 @@ send_telegram_notification() {
             message+="变更: $old_ipv6_display -> $Public_IPv6${nl}${nl}"
         done
     fi
-
     message+="====================${nl}"
     message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
-    curl -s -X POST "https://api.telegram.org/bot$Telegram_Bot_Token/sendMessage" \
-        -d "chat_id=$Telegram_Chat_ID" \
-        --data-urlencode "text=$message" >/dev/null 2>&1
+    # 使用 jq 安全构建 JSON，避免特殊字符转义问题
+    local json_payload
+    json_payload=$(jq -n \
+        --arg chat_id "$Telegram_Chat_ID" \
+        --arg text "$message" \
+        '{chat_id: $chat_id, text: $text}')
+
+    curl -s -X POST "https://api.telegram.org/bot${Telegram_Bot_Token}/sendMessage" \
+        -H "Content-Type: application/json" \
+        -d "$json_payload" >/dev/null 2>&1
 }
 
 record_last_run() {
@@ -227,26 +252,29 @@ else
     fi
 fi
 
-for Domain in "${Domains[@]}"; do
-    [ -z "$Domain" ] && continue
-    Root_domain=$(echo "$Domain" | awk -F '.' '{print $(NF-1)"."$NF}')
-    Zone_id=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domain" | grep -Po '(?<="id":")[^"]*' | head -1)
-    DNS_IDv4=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records?type=A&name=$Domain" | grep -Po '(?<="id":")[^"]*' | head -1)
+# FIX 3: 仅在 IP 发生变更时才调用 Cloudflare API，避免不必要的请求
+if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
+    for Domain in "${Domains[@]}"; do
+        [ -z "$Domain" ] && continue
+        Root_domain=$(echo "$Domain" | awk -F '.' '{print $(NF-1)"."$NF}')
+        Zone_id=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domain" | jq -r '.result[0].id // empty')
+        DNS_IDv4=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records?type=A&name=$Domain" | jq -r '.result[0].id // empty')
 
-    if [[ -n "$Zone_id" && -n "$DNS_IDv4" && -n "$Public_IPv4" ]]; then
-        cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records/$DNS_IDv4" \
-            "{\"type\":\"A\",\"name\":\"$Domain\",\"content\":\"$Public_IPv4\"}" >/dev/null 2>&1
-    fi
-done
+        if [[ -n "$Zone_id" && -n "$DNS_IDv4" ]]; then
+            cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records/$DNS_IDv4" \
+                "{\"type\":\"A\",\"name\":\"$Domain\",\"content\":\"$Public_IPv4\"}" >/dev/null 2>&1
+        fi
+    done
+fi
 
-if [[ "${ipv6_set:-false}" == "true" ]]; then
+if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" ]]; then
     for Domainv6 in "${Domainsv6[@]}"; do
         [ -z "$Domainv6" ] && continue
         Root_domainv6=$(echo "$Domainv6" | awk -F '.' '{print $(NF-1)"."$NF}')
-        Zone_idv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domainv6" | grep -Po '(?<="id":")[^"]*' | head -1)
-        DNS_IDv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records?type=AAAA&name=$Domainv6" | grep -Po '(?<="id":")[^"]*' | head -1)
+        Zone_idv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domainv6" | jq -r '.result[0].id // empty')
+        DNS_IDv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records?type=AAAA&name=$Domainv6" | jq -r '.result[0].id // empty')
 
-        if [[ -n "$Zone_idv6" && -n "$DNS_IDv6" && -n "$Public_IPv6" ]]; then
+        if [[ -n "$Zone_idv6" && -n "$DNS_IDv6" ]]; then
             cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records/$DNS_IDv6" \
                 "{\"type\":\"AAAA\",\"name\":\"$Domainv6\",\"content\":\"$Public_IPv6\"}" >/dev/null 2>&1
         fi
@@ -290,7 +318,8 @@ Old_Public_IPv6=""
 EOF_DDNS_CONFIG
 
     chmod +x /etc/DDNS/DDNS
-    chmod +x /etc/DDNS/.config
+    # FIX 6: 配置文件含密钥，权限应为 600 而非 +x
+    chmod 600 /etc/DDNS/.config
     touch /etc/DDNS/ddns.log
     echo -e "${Info}DDNS 安装完成！"
     echo
@@ -325,24 +354,15 @@ start_ddns() {
     fi
 }
 
+# FIX 1: 修复 restart_ddns，Alpine 下直接删除旧任务再重新添加，避免重复追加 >/dev/null 2>&1
 restart_ddns() {
     if grep -qiE "alpine" /etc/os-release; then
         echo -e "${Info}重新启动 ddns 脚本..."
-        current_cron=$(crontab -l 2>/dev/null | grep "/bin/bash /etc/DDNS/DDNS" || true)
-        if [ -n "$current_cron" ]; then
-            crontab -l 2>/dev/null | grep -v "/bin/bash /etc/DDNS/DDNS" | crontab -
-            new_cron="${current_cron} >/dev/null 2>&1"
-            (crontab -l 2>/dev/null; echo "$new_cron") | crontab -
-            echo -e "${Info}DDNS 已重启！"
-        else
-            echo -e "${Error}未找到现有的 cron 任务，无法重启 DDNS。"
-            read -rp "是否要添加一个新的 DDNS 任务（每 2 分钟）？[y/n] " add_cron
-            if [[ "$add_cron" == "y" || "$add_cron" == "Y" ]]; then
-                new_cron="*/2 * * * * /bin/bash /etc/DDNS/DDNS >/dev/null 2>&1"
-                (crontab -l 2>/dev/null; echo "$new_cron") | crontab -
-                echo -e "${Info}已添加新的 DDNS 任务，每 2 分钟运行一次！"
-            fi
-        fi
+        # 先移除旧任务
+        crontab -l 2>/dev/null | grep -v "/etc/DDNS/DDNS" | crontab -
+        # 重新添加标准格式任务
+        (crontab -l 2>/dev/null; echo "*/2 * * * * /bin/bash /etc/DDNS/DDNS >/dev/null 2>&1") | crontab -
+        echo -e "${Info}DDNS 已重启！"
     else
         echo -e "${Info}重启 DDNS 服务..."
         systemctl restart ddns.service >/dev/null 2>&1
@@ -469,13 +489,15 @@ disable_autostart() {
     fi
 }
 
+# FIX 5: 用更精确的方式检测 crond 是否在 Alpine 开机自启中
 check_autostart_status() {
     if grep -qiE "alpine" /etc/os-release; then
         local crond_autostart="未开启"
         local cron_task="未设置"
 
         if command -v rc-update >/dev/null 2>&1; then
-            if rc-update show default 2>/dev/null | grep -qE '(^|[[:space:]])crond([[:space:]]|$)'; then
+            # 用 rc-update show 精确匹配 crond，避免误匹配
+            if rc-update show default 2>/dev/null | awk '{print $1}' | grep -qx "crond"; then
                 crond_autostart="已开启"
             fi
         fi
@@ -716,8 +738,9 @@ set_domain() {
             echo
             sed -i "/^Domains=/c\Domains=($(quote_array "${Domains[@]}"))" /etc/DDNS/.config
 
+            # FIX 2: 每次调用前明确清空数组，避免多次调用时累积旧数据
+            Domains_Names=()
             echo -e "${Tip}现在为IPv4域名设置名称标识（用于Telegram通知中显示）"
-            declare -a Domains_Names
             for ((i=0; i<${#Domains[@]}; i++)); do
                 echo -e "${Tip}请为域名 '${GREEN}${Domains[$i]}${NC}' 设置一个名称标识，或按回车使用域名作为标识"
                 read -rp "名称标识: " domain_name
@@ -761,8 +784,9 @@ set_domain() {
                     echo
                     sed -i "/^Domainsv6=/c\Domainsv6=($(quote_array "${Domainsv6[@]}"))" /etc/DDNS/.config
 
+                    # FIX 2: 同样清空 IPv6 名称数组
+                    Domainsv6_Names=()
                     echo -e "${Tip}现在为IPv6域名设置名称标识（用于Telegram通知中显示）"
-                    declare -a Domainsv6_Names
                     for ((i=0; i<${#Domainsv6[@]}; i++)); do
                         echo -e "${Tip}请为域名 '${GREEN}${Domainsv6[$i]}${NC}' 设置一个名称标识，或按回车使用域名作为标识"
                         read -rp "名称标识: " domainv6_name
@@ -820,7 +844,8 @@ set_domain_names() {
 
     if [ ${#Domains[@]} -gt 0 ]; then
         echo -e "${Tip}现在修改 IPv4 域名名称标识："
-        declare -a new_domains_names
+        # FIX 2: 明确初始化为空数组
+        new_domains_names=()
         for ((i=0; i<${#Domains[@]}; i++)); do
             domain="${Domains[$i]}"
             current_name="${Domains_Names[$i]:-$domain}"
@@ -853,7 +878,8 @@ set_domain_names() {
         echo
 
         echo -e "${Tip}现在修改 IPv6 域名名称标识："
-        declare -a new_domainsv6_names
+        # FIX 2: 明确初始化为空数组
+        new_domainsv6_names=()
         for ((i=0; i<${#Domainsv6[@]}; i++)); do
             domainv6="${Domainsv6[$i]}"
             current_name="${Domainsv6_Names[$i]:-$domainv6}"
@@ -905,6 +931,34 @@ set_telegram_settings(){
     fi
 }
 
+update_ddns() {
+    echo -e "${Info}正在检查更新..."
+    local remote_url="https://raw.githubusercontent.com/wyusgw/ddns/refs/heads/main/ddns.sh"
+    local tmp_file="/tmp/ddns_new.sh"
+
+    if ! curl -fsSL --max-time 15 -o "$tmp_file" "$remote_url"; then
+        echo -e "${Error}下载失败，请检查网络连接后重试。"
+        return 1
+    fi
+
+    local local_md5 remote_md5
+    local_md5=$(md5sum /usr/bin/ddns 2>/dev/null | awk '{print $1}')
+    remote_md5=$(md5sum "$tmp_file" 2>/dev/null | awk '{print $1}')
+
+    if [[ "$local_md5" == "$remote_md5" ]]; then
+        echo -e "${Info}当前已是最新版本，无需更新。"
+        rm -f "$tmp_file"
+        return 0
+    fi
+
+    echo -e "${Tip}检测到新版本，正在更新..."
+    cp "$tmp_file" /usr/bin/ddns
+    chmod +x /usr/bin/ddns
+    rm -f "$tmp_file"
+    echo -e "${Info}更新完成！请重新执行 ${GREEN}ddns${NC} 以使用新版本。"
+    exit 0
+}
+
 uninstall_ddns() {
     if grep -qiE "alpine" /etc/os-release; then
         stop_ddns
@@ -944,25 +998,14 @@ show_menu(){
         echo -e "  ${GREEN}12${NC}：查看最近一次执行记录"
         echo -e "  ${GREEN}13${NC}：查看全部状态"
         echo -e "  ${GREEN}14${NC}：查看定时任务配置"
+        echo -e "  ${GREEN}15${NC}：更新脚本"
         echo -e "  ${GREEN}0${NC}：退出"
         echo
 
-        read -rp "选项 [0-14]： " option
+        read -rp "选项 [0-15]： " option
 
-        if [ -z "$option" ]; then
-            echo -e "${Tip}未输入任何选项，脚本即将退出..."
-            sleep 1
-            exit 0
-        fi
-
-        if ! [[ "$option" =~ ^[0-9]+$ ]]; then
-            echo -e "${Error}请输入正确的数字 [0-14]！"
-            sleep 1
-            continue
-        fi
-
-        if [ "$option" -lt 0 ] || [ "$option" -gt 14 ]; then
-            echo -e "${Error}请输入正确的数字 [0-14]！"
+        if ! [[ "$option" =~ ^([0-9]|1[0-5])$ ]]; then
+            echo -e "${RED}请输入正确的数字 [0-15]${NC}"
             sleep 1
             continue
         fi
@@ -1030,14 +1073,12 @@ show_menu(){
                 read -rp "按回车返回菜单..." dummy
                 sleep 1
             ;;
-            0)
-                echo -e "${Tip}脚本即将退出..."
+            15)
+                update_ddns
                 sleep 1
-                exit 0
             ;;
-            *)
-                echo -e "${Error}请输入正确的数字 [0-14]！"
-                sleep 1
+            0)
+                exit 0
             ;;
         esac
     done
