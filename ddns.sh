@@ -13,8 +13,9 @@ Tip="${YELLOW}[提示]${NC}"
 cop_info(){
 clear
 echo -e "${GREEN}##################################
-#      DDNS 一键脚本 v2.0
-#   $(date '+%Y-%m-%d %H:%M:%S')
+#      DDNS 一键脚本 v2.0       #
+#            作者: wyusgw         #
+#   $(date '+%Y-%m-%d %H:%M:%S')  #
 ##################################${NC}"
 echo
 }
