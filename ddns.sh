@@ -13,9 +13,9 @@ Tip="${YELLOW}[提示]${NC}"
 cop_info(){
 clear
 echo -e "${GREEN}##################################
-#      DDNS 一键脚本 v2.0       #
-#            作者: wyusgw         #
-#   $(date '+%Y-%m-%d %H:%M:%S')  #
+#       DDNS 一键脚本 v2.0       #
+#          作者: wyusgw          #
+#      $(date '+%Y-%m-%d %H:%M:%S')       #
 ##################################${NC}"
 echo
 }
@@ -54,6 +54,25 @@ check_curl() {
             apk add curl
             if [ $? -ne 0 ]; then
                 echo -e "${RED}在 Alpine 上安装 curl 失败，请手动安装后重新运行脚本。${NC}"
+                exit 1
+            fi
+        fi
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        echo -e "${YELLOW}未检测到 jq，正在安装 jq...${NC}"
+        if grep -qiE "debian|ubuntu" /etc/os-release; then
+            apt update
+            apt install -y jq
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}在 Debian/Ubuntu 上安装 jq 失败，请手动安装后重新运行脚本。${NC}"
+                exit 1
+            fi
+        elif grep -qiE "alpine" /etc/os-release; then
+            apk update
+            apk add jq
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}在 Alpine 上安装 jq 失败，请手动安装后重新运行脚本。${NC}"
                 exit 1
             fi
         fi
@@ -119,12 +138,11 @@ cf_api() {
     fi
 }
 
-# FIX 4: 修复 Telegram 通知，使用 JSON 方式发送避免 --data-urlencode 在 POST 中的问题
+# 使用 jq 构建 Telegram 通知 JSON，正确处理特殊字符
 send_telegram_notification() {
     local nl=$'\n'
     local message="DDNS 更新通知${nl}"
     message+="====================${nl}"
-
     if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
         local old_ipv4_display="${Old_Public_IPv4:-未记录}"
         message+="[IPv4] 地址变更${nl}"
@@ -137,7 +155,7 @@ send_telegram_notification() {
             fi
             message+="名称: $domain_name${nl}"
             message+="域名: $domain${nl}"
-            message+="变更: $old_ipv4_display -> $Public_IPv4${nl}${nl}"
+            message+="变更: $old_ipv4_display 🔜 $Public_IPv4${nl}"
         done
     fi
 
@@ -153,18 +171,19 @@ send_telegram_notification() {
             fi
             message+="名称: $domainv6_name${nl}"
             message+="域名: $domainv6${nl}"
-            message+="变更: $old_ipv6_display -> $Public_IPv6${nl}${nl}"
+            message+="变更: $old_ipv6_display 🔜 $Public_IPv6${nl}"
         done
     fi
 
     message+="====================${nl}"
     message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
-    # FIX 4: 改用 JSON body 发送，避免 --data-urlencode 与 POST 不兼容问题
+    # 使用 jq 安全构建 JSON，parse_mode 不传（纯文本），避免特殊字符被误解析
     local json_payload
-    json_payload=$(printf '{"chat_id":"%s","text":"%s"}' \
-        "$Telegram_Chat_ID" \
-        "$(echo "$message" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')")
+    json_payload=$(jq -n \
+        --arg chat_id "$Telegram_Chat_ID" \
+        --arg text "$message" \
+        '{chat_id: $chat_id, text: $text}')
 
     curl -s -X POST "https://api.telegram.org/bot${Telegram_Bot_Token}/sendMessage" \
         -H "Content-Type: application/json" \
@@ -239,8 +258,8 @@ if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
     for Domain in "${Domains[@]}"; do
         [ -z "$Domain" ] && continue
         Root_domain=$(echo "$Domain" | awk -F '.' '{print $(NF-1)"."$NF}')
-        Zone_id=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domain" | grep -Po '(?<="id":")[^"]*' | head -1)
-        DNS_IDv4=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records?type=A&name=$Domain" | grep -Po '(?<="id":")[^"]*' | head -1)
+        Zone_id=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domain" | jq -r '.result[0].id // empty')
+        DNS_IDv4=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records?type=A&name=$Domain" | jq -r '.result[0].id // empty')
 
         if [[ -n "$Zone_id" && -n "$DNS_IDv4" ]]; then
             cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records/$DNS_IDv4" \
@@ -253,8 +272,8 @@ if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "
     for Domainv6 in "${Domainsv6[@]}"; do
         [ -z "$Domainv6" ] && continue
         Root_domainv6=$(echo "$Domainv6" | awk -F '.' '{print $(NF-1)"."$NF}')
-        Zone_idv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domainv6" | grep -Po '(?<="id":")[^"]*' | head -1)
-        DNS_IDv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records?type=AAAA&name=$Domainv6" | grep -Po '(?<="id":")[^"]*' | head -1)
+        Zone_idv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domainv6" | jq -r '.result[0].id // empty')
+        DNS_IDv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records?type=AAAA&name=$Domainv6" | jq -r '.result[0].id // empty')
 
         if [[ -n "$Zone_idv6" && -n "$DNS_IDv6" ]]; then
             cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records/$DNS_IDv6" \
@@ -913,6 +932,34 @@ set_telegram_settings(){
     fi
 }
 
+update_ddns() {
+    echo -e "${Info}正在检查更新..."
+    local remote_url="https://raw.githubusercontent.com/wyusgw/ddns/refs/heads/main/ddns.sh"
+    local tmp_file="/tmp/ddns_new.sh"
+
+    if ! curl -fsSL --max-time 15 -o "$tmp_file" "$remote_url"; then
+        echo -e "${Error}下载失败，请检查网络连接后重试。"
+        return 1
+    fi
+
+    local local_md5 remote_md5
+    local_md5=$(md5sum /usr/bin/ddns 2>/dev/null | awk '{print $1}')
+    remote_md5=$(md5sum "$tmp_file" 2>/dev/null | awk '{print $1}')
+
+    if [[ "$local_md5" == "$remote_md5" ]]; then
+        echo -e "${Info}当前已是最新版本，无需更新。"
+        rm -f "$tmp_file"
+        return 0
+    fi
+
+    echo -e "${Tip}检测到新版本，正在更新..."
+    cp "$tmp_file" /usr/bin/ddns
+    chmod +x /usr/bin/ddns
+    rm -f "$tmp_file"
+    echo -e "${Info}更新完成！请重新执行 ${GREEN}ddns${NC} 以使用新版本。"
+    exit 0
+}
+
 uninstall_ddns() {
     if grep -qiE "alpine" /etc/os-release; then
         stop_ddns
@@ -952,13 +999,20 @@ show_menu(){
         echo -e "  ${GREEN}12${NC}：查看最近一次执行记录"
         echo -e "  ${GREEN}13${NC}：查看全部状态"
         echo -e "  ${GREEN}14${NC}：查看定时任务配置"
+        echo -e "  ${GREEN}15${NC}：更新脚本"
         echo -e "  ${GREEN}0${NC}：退出"
         echo
 
-        read -rp "选项 [0-14]： " option
+        read -rp "选项 [0-15]： " option
 
-        if ! [[ "$option" =~ ^([0-9]|1[0-4])$ ]]; then
-            echo -e "${RED}请输入正确的数字 [0-14]${NC}"
+        if [[ -z "$option" ]]; then
+            echo -e "${RED}请输入正确的数字 [0-15]${NC}"
+            sleep 1
+            exit 0
+        fi
+
+        if ! [[ "$option" =~ ^([0-9]|1[0-5])$ ]]; then
+            echo -e "${RED}请输入正确的数字 [0-15]${NC}"
             sleep 1
             continue
         fi
@@ -1024,6 +1078,10 @@ show_menu(){
             14)
                 check_schedule_config
                 read -rp "按回车返回菜单..." dummy
+                sleep 1
+            ;;
+            15)
+                update_ddns
                 sleep 1
             ;;
             0)
