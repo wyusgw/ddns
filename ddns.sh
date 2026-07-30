@@ -394,6 +394,9 @@ run_ddns() {
         else
             echo -e "${Tip}ddns 脚本的 cron 任务已存在，无需再次创建！"
         fi
+        # FIX: 立即执行一次，避免等待 cron 首次触发导致配置看起来未生效
+        echo -e "${Info}正在立即执行一次 DDNS 更新..."
+        /bin/bash /etc/DDNS/DDNS >/dev/null 2>&1 &
     else
         service='[Unit]
 Description=ddns
@@ -427,6 +430,12 @@ WantedBy=multi-user.target'
         else
             echo -e "${Tip}服务和定时器单元文件已存在，无需再次创建！"
         fi
+        # FIX: ddns.timer 仅配置了 OnUnitActiveSec，其计时以 ddns.service 上一次被激活的
+        # 时间为基准；该服务从未运行过时定时器没有参考起点，不会自行首次触发，
+        # 导致刚填好的 token 看起来"不生效"，直到用户手动重新配置一次触发 restart。
+        # 这里显式启动一次，建立参考点，同时让配置立刻生效。
+        echo -e "${Info}正在立即执行一次 DDNS 更新..."
+        systemctl start ddns.service >/dev/null 2>&1
     fi
 }
 
