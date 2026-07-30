@@ -997,12 +997,12 @@ show_menu(){
         echo -e "  ${GREEN}1${NC}：启动 DDNS"
         echo -e "  ${GREEN}2${NC}：停止 DDNS"
         echo -e "  ${GREEN}3${NC}：重启 DDNS"
-        echo -e "  ${GREEN}4${NC}：重新配置 Cloudflare"
-        echo -e "  ${GREEN}5${NC}：配置 Telegram"
-        echo -e "  ${GREEN}6${NC}：修改域名"
-        echo -e "  ${GREEN}7${NC}：修改运行间隔"
-        echo -e "  ${GREEN}8${NC}：修改域名名称标识"
-        echo -e "  ${GREEN}9${NC}：卸载 DDNS"
+        echo -e "  ${GREEN}4${NC}：卸载 DDNS"
+        echo -e "  ${GREEN}5${NC}：重新配置 Cloudflare"
+        echo -e "  ${GREEN}6${NC}：配置 Telegram"
+        echo -e "  ${GREEN}7${NC}：修改域名"
+        echo -e "  ${GREEN}8${NC}：修改运行间隔"
+        echo -e "  ${GREEN}9${NC}：修改域名名称标识"
         echo -e "  ${GREEN}10${NC}：开启开机自启"
         echo -e "  ${GREEN}11${NC}：关闭开机自启"
         echo -e "  ${GREEN}12${NC}：查看最近一次执行记录"
@@ -1040,31 +1040,31 @@ show_menu(){
                 sleep 1
             ;;
             4)
+                uninstall_ddns
+                sleep 1
+                exit 0
+            ;;
+            5)
                 set_cloudflare_api
                 restart_ddns
                 sleep 1
             ;;
-            5)
+            6)
                 set_telegram_settings
                 sleep 1
             ;;
-            6)
+            7)
                 set_domain
                 restart_ddns
                 sleep 1
             ;;
-            7)
+            8)
                 set_ddns_run_interval
                 sleep 1
             ;;
-            8)
+            9)
                 set_domain_names
                 sleep 1
-            ;;
-            9)
-                uninstall_ddns
-                sleep 1
-                exit 0
             ;;
             10)
                 enable_autostart
