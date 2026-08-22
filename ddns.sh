@@ -139,53 +139,94 @@ cf_api() {
 }
 
 # 使用 jq 构建 Telegram 通知 JSON，正确处理特殊字符
+get_domain_display_name() {
+    local target="$1"
+    local i
+    for ((i=0; i<${#Domains[@]}; i++)); do
+        if [[ "${Domains[$i]}" == "$target" ]]; then
+            if [[ ${#Domains_Names[@]} -gt $i && -n "${Domains_Names[$i]}" ]]; then
+                echo "${Domains_Names[$i]}"
+            else
+                echo "$target"
+            fi
+            return
+        fi
+    done
+    echo "$target"
+}
+
+get_domainv6_display_name() {
+    local target="$1"
+    local i
+    for ((i=0; i<${#Domainsv6[@]}; i++)); do
+        if [[ "${Domainsv6[$i]}" == "$target" ]]; then
+            if [[ ${#Domainsv6_Names[@]} -gt $i && -n "${Domainsv6_Names[$i]}" ]]; then
+                echo "${Domainsv6_Names[$i]}"
+            else
+                echo "$target"
+            fi
+            return
+        fi
+    done
+    echo "$target"
+}
+
 send_telegram_notification() {
     local nl=$'\n'
-
-    # 计算本次执行的整体状态：全部成功 / 部分失败 / 全部失败
-    local total_success=$(( ${#Success_Domains[@]} + ${#Success_Domainsv6[@]} ))
-    local total_failed=$(( ${#Failed_Domains[@]} + ${#Failed_Domainsv6[@]} ))
-    local overall_status
-    if [[ $total_failed -eq 0 ]]; then
-        overall_status="成功"
-    elif [[ $total_success -eq 0 ]]; then
-        overall_status="失败"
-    else
-        overall_status="部分失败"
-    fi
-
-    local message="DDNS 更新通知${nl}"
-    message+="执行结果: ${overall_status}（成功 ${total_success} 个，失败 ${total_failed} 个）${nl}"
-    message+="====================${nl}"
 
     local old_ipv4_display="${Old_Public_IPv4:-未记录}"
     local old_ipv6_display="${Old_Public_IPv6:-未记录}"
 
-    # 先列出所有"成功"的记录（IPv4 + IPv6 合并展示，一次性看完成功项）
-    if [[ ${#Success_Domains[@]} -gt 0 || ${#Success_Domainsv6[@]} -gt 0 ]]; then
-        message+="[成功]${nl}"
-        for domain in "${Success_Domains[@]}"; do
-            message+="  ${domain} (A)：${old_ipv4_display} -> ${Public_IPv4}${nl}"
-        done
-        for domainv6 in "${Success_Domainsv6[@]}"; do
-            message+="  ${domainv6} (AAAA)：${old_ipv6_display} -> ${Public_IPv6}${nl}"
-        done
-        message+="${nl}"
-    fi
-
-    # 再列出所有"失败"的记录，方便一眼看出哪些没更新成功
-    if [[ ${#Failed_Domains[@]} -gt 0 || ${#Failed_Domainsv6[@]} -gt 0 ]]; then
-        message+="[失败]${nl}"
-        for domain in "${Failed_Domains[@]}"; do
-            message+="  ${domain} (A)${nl}"
-        done
-        for domainv6 in "${Failed_Domainsv6[@]}"; do
-            message+="  ${domainv6} (AAAA)${nl}"
-        done
-        message+="  详细错误请查看 ${LOG_FILE}${nl}"
-    fi
-
+    local message="DDNS 更新通知${nl}"
     message+="====================${nl}"
+
+    local name
+
+    for domain in "${Success_Domains[@]}"; do
+        name=$(get_domain_display_name "$domain")
+        message+="[IPv4] 地址变更成功${nl}"
+        message+="名称: ${name}${nl}"
+        message+="域名: ${domain}${nl}"
+        message+="变更: ${old_ipv4_display} 🔜 ${Public_IPv4}${nl}"
+        message+="====================${nl}"
+    done
+
+    for domainv6 in "${Success_Domainsv6[@]}"; do
+        name=$(get_domainv6_display_name "$domainv6")
+        message+="[IPv6] 地址变更成功${nl}"
+        message+="名称: ${name}${nl}"
+        message+="域名: ${domainv6}${nl}"
+        message+="变更: ${old_ipv6_display} 🔜 ${Public_IPv6}${nl}"
+        message+="====================${nl}"
+    done
+
+    local i_v4=0
+    local i_v6=0
+
+    for domain in "${Failed_Domains[@]}"; do
+        name=$(get_domain_display_name "$domain")
+        message+="[IPv4] 地址变更失败${nl}"
+        message+="名称: ${name}${nl}"
+        message+="域名: ${domain}${nl}"
+        message+="原因: ${Failed_Domains_Errors[$i_v4]}${nl}"
+        message+="====================${nl}"
+        i_v4=$((i_v4+1))
+    done
+
+    for domainv6 in "${Failed_Domainsv6[@]}"; do
+        name=$(get_domainv6_display_name "$domainv6")
+        message+="[IPv6] 地址变更失败${nl}"
+        message+="名称: ${name}${nl}"
+        message+="域名: ${domainv6}${nl}"
+        message+="原因: ${Failed_Domainsv6_Errors[$i_v6]}${nl}"
+        message+="====================${nl}"
+        i_v6=$((i_v6+1))
+    done
+
+    if [[ ${#Failed_Domains[@]} -gt 0 || ${#Failed_Domainsv6[@]} -gt 0 ]]; then
+        message+="如果要看完整错误请查看日志: ${LOG_FILE}${nl}"
+    fi
+
     message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
     local json_payload
@@ -267,8 +308,10 @@ fi
 # 记录每个域名的成功/失败情况，而不是只看"检测到 IP 变了"
 Success_Domains=()
 Failed_Domains=()
+Failed_Domains_Errors=()
 Success_Domainsv6=()
 Failed_Domainsv6=()
+Failed_Domainsv6_Errors=()
 
 # ===== IPv4 更新（校验 Cloudflare API 返回结果） =====
 if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
@@ -280,6 +323,7 @@ if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
 
         if [[ -z "$Zone_id" ]]; then
             Failed_Domains+=("$Domain")
+            Failed_Domains_Errors+=("未找到 Zone($Root_domain)，检查权限或域名是否属于该账号")
             echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain 更新失败: 未找到 Zone($Root_domain)，检查权限或域名是否属于该账号" >> "$LOG_FILE"
             continue
         fi
@@ -295,6 +339,7 @@ if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
             else
                 Failed_Domains+=("$Domain")
                 errmsg=$(echo "$create_resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+                Failed_Domains_Errors+=("${errmsg:-API返回失败}")
                 echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain 创建记录失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
             fi
             continue
@@ -309,6 +354,7 @@ if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
         else
             Failed_Domains+=("$Domain")
             errmsg=$(echo "$resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+            Failed_Domains_Errors+=("${errmsg:-API返回失败}")
             echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain -> $Public_IPv4 更新失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
         fi
     done
@@ -324,6 +370,7 @@ if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "
 
         if [[ -z "$Zone_idv6" ]]; then
             Failed_Domainsv6+=("$Domainv6")
+            Failed_Domainsv6_Errors+=("未找到 Zone($Root_domainv6)，检查权限或域名是否属于该账号")
             echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 更新失败: 未找到 Zone($Root_domainv6)，检查权限或域名是否属于该账号" >> "$LOG_FILE"
             continue
         fi
@@ -338,6 +385,7 @@ if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "
             else
                 Failed_Domainsv6+=("$Domainv6")
                 errmsg=$(echo "$create_resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+                Failed_Domainsv6_Errors+=("${errmsg:-API返回失败}")
                 echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 创建记录失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
             fi
             continue
@@ -352,6 +400,7 @@ if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "
         else
             Failed_Domainsv6+=("$Domainv6")
             errmsg=$(echo "$resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+            Failed_Domainsv6_Errors+=("${errmsg:-API返回失败}")
             echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 -> $Public_IPv6 更新失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
         fi
     done
