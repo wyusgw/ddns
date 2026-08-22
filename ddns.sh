@@ -141,44 +141,53 @@ cf_api() {
 # 使用 jq 构建 Telegram 通知 JSON，正确处理特殊字符
 send_telegram_notification() {
     local nl=$'\n'
-    local message="DDNS 更新通知${nl}"
-    message+="====================${nl}"
-    if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
-        local old_ipv4_display="${Old_Public_IPv4:-未记录}"
-        message+="[IPv4] 地址变更${nl}"
-        for ((i=0; i<${#Domains[@]}; i++)); do
-            domain="${Domains[$i]}"
-            if [[ ${#Domains_Names[@]} -gt $i && -n "${Domains_Names[$i]}" ]]; then
-                domain_name="${Domains_Names[$i]}"
-            else
-                domain_name="$domain"
-            fi
-            message+="名称: $domain_name${nl}"
-            message+="域名: $domain${nl}"
-            message+="变更: $old_ipv4_display 🔜 $Public_IPv4${nl}"
-        done
+
+    # 计算本次执行的整体状态：全部成功 / 部分失败 / 全部失败
+    local total_success=$(( ${#Success_Domains[@]} + ${#Success_Domainsv6[@]} ))
+    local total_failed=$(( ${#Failed_Domains[@]} + ${#Failed_Domainsv6[@]} ))
+    local overall_status
+    if [[ $total_failed -eq 0 ]]; then
+        overall_status="成功"
+    elif [[ $total_success -eq 0 ]]; then
+        overall_status="失败"
+    else
+        overall_status="部分失败"
     fi
 
-    if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" ]]; then
-        local old_ipv6_display="${Old_Public_IPv6:-未记录}"
-        message+="[IPv6] 地址变更${nl}"
-        for ((i=0; i<${#Domainsv6[@]}; i++)); do
-            domainv6="${Domainsv6[$i]}"
-            if [[ ${#Domainsv6_Names[@]} -gt $i && -n "${Domainsv6_Names[$i]}" ]]; then
-                domainv6_name="${Domainsv6_Names[$i]}"
-            else
-                domainv6_name="$domainv6"
-            fi
-            message+="名称: $domainv6_name${nl}"
-            message+="域名: $domainv6${nl}"
-            message+="变更: $old_ipv6_display 🔜 $Public_IPv6${nl}"
+    local message="DDNS 更新通知${nl}"
+    message+="执行结果: ${overall_status}（成功 ${total_success} 个，失败 ${total_failed} 个）${nl}"
+    message+="====================${nl}"
+
+    local old_ipv4_display="${Old_Public_IPv4:-未记录}"
+    local old_ipv6_display="${Old_Public_IPv6:-未记录}"
+
+    # 先列出所有"成功"的记录（IPv4 + IPv6 合并展示，一次性看完成功项）
+    if [[ ${#Success_Domains[@]} -gt 0 || ${#Success_Domainsv6[@]} -gt 0 ]]; then
+        message+="[成功]${nl}"
+        for domain in "${Success_Domains[@]}"; do
+            message+="  ${domain} (A)：${old_ipv4_display} -> ${Public_IPv4}${nl}"
         done
+        for domainv6 in "${Success_Domainsv6[@]}"; do
+            message+="  ${domainv6} (AAAA)：${old_ipv6_display} -> ${Public_IPv6}${nl}"
+        done
+        message+="${nl}"
+    fi
+
+    # 再列出所有"失败"的记录，方便一眼看出哪些没更新成功
+    if [[ ${#Failed_Domains[@]} -gt 0 || ${#Failed_Domainsv6[@]} -gt 0 ]]; then
+        message+="[失败]${nl}"
+        for domain in "${Failed_Domains[@]}"; do
+            message+="  ${domain} (A)${nl}"
+        done
+        for domainv6 in "${Failed_Domainsv6[@]}"; do
+            message+="  ${domainv6} (AAAA)${nl}"
+        done
+        message+="  详细错误请查看 ${LOG_FILE}${nl}"
     fi
 
     message+="====================${nl}"
     message+="更新时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
-    # 使用 jq 安全构建 JSON，parse_mode 不传（纯文本），避免特殊字符被误解析
     local json_payload
     json_payload=$(jq -n \
         --arg chat_id "$Telegram_Chat_ID" \
@@ -198,8 +207,10 @@ record_last_run() {
         echo "LAST_RUN_TIME=\"$now\""
         echo "LAST_RUN_IPV4=\"${Public_IPv4:-}\""
         echo "LAST_RUN_IPV6=\"${Public_IPv6:-}\""
+        echo "LAST_RUN_SUCCESS=\"${Success_Domains[*]:-} ${Success_Domainsv6[*]:-}\""
+        echo "LAST_RUN_FAILED=\"${Failed_Domains[*]:-} ${Failed_Domainsv6[*]:-}\""
     } > "$LAST_RUN_FILE"
-    echo "$now IPv4=${Public_IPv4:-none} IPv6=${Public_IPv6:-none}" >> "$LOG_FILE"
+    echo "$now IPv4=${Public_IPv4:-none} IPv6=${Public_IPv6:-none} 成功=[${Success_Domains[*]:-} ${Success_Domainsv6[*]:-}] 失败=[${Failed_Domains[*]:-} ${Failed_Domainsv6[*]:-}]" >> "$LOG_FILE"
 }
 
 Old_Public_IPv4="${Old_Public_IPv4:-}"
@@ -253,7 +264,13 @@ else
     fi
 fi
 
-# FIX 3: 仅在 IP 发生变更时才调用 Cloudflare API，避免不必要的请求
+# 记录每个域名的成功/失败情况，而不是只看"检测到 IP 变了"
+Success_Domains=()
+Failed_Domains=()
+Success_Domainsv6=()
+Failed_Domainsv6=()
+
+# ===== IPv4 更新（校验 Cloudflare API 返回结果） =====
 if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
     for Domain in "${Domains[@]}"; do
         [ -z "$Domain" ] && continue
@@ -261,13 +278,43 @@ if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
         Zone_id=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domain" | jq -r '.result[0].id // empty')
         DNS_IDv4=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records?type=A&name=$Domain" | jq -r '.result[0].id // empty')
 
-        if [[ -n "$Zone_id" && -n "$DNS_IDv4" ]]; then
-            cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records/$DNS_IDv4" \
-                "{\"type\":\"A\",\"name\":\"$Domain\",\"content\":\"$Public_IPv4\"}" >/dev/null 2>&1
+        if [[ -z "$Zone_id" ]]; then
+            Failed_Domains+=("$Domain")
+            echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain 更新失败: 未找到 Zone($Root_domain)，检查权限或域名是否属于该账号" >> "$LOG_FILE"
+            continue
+        fi
+
+        if [[ -z "$DNS_IDv4" ]]; then
+            # 记录不存在，尝试自动创建
+            create_resp=$(cf_api POST "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records" \
+                "{\"type\":\"A\",\"name\":\"$Domain\",\"content\":\"$Public_IPv4\",\"ttl\":120,\"proxied\":false}")
+            create_ok=$(echo "$create_resp" | jq -r '.success // false')
+            if [[ "$create_ok" == "true" ]]; then
+                Success_Domains+=("$Domain")
+                echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain -> $Public_IPv4 记录不存在，已自动创建" >> "$LOG_FILE"
+            else
+                Failed_Domains+=("$Domain")
+                errmsg=$(echo "$create_resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+                echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain 创建记录失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
+            fi
+            continue
+        fi
+
+        resp=$(cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_id/dns_records/$DNS_IDv4" \
+            "{\"type\":\"A\",\"name\":\"$Domain\",\"content\":\"$Public_IPv4\"}")
+        ok=$(echo "$resp" | jq -r '.success // false')
+        if [[ "$ok" == "true" ]]; then
+            Success_Domains+=("$Domain")
+            echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain -> $Public_IPv4 更新成功" >> "$LOG_FILE"
+        else
+            Failed_Domains+=("$Domain")
+            errmsg=$(echo "$resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+            echo "$(date '+%Y-%m-%d %H:%M:%S') [A] $Domain -> $Public_IPv4 更新失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
         fi
     done
 fi
 
+# ===== IPv6 更新（同样校验返回结果） =====
 if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" ]]; then
     for Domainv6 in "${Domainsv6[@]}"; do
         [ -z "$Domainv6" ] && continue
@@ -275,27 +322,61 @@ if [[ "${ipv6_set:-false}" == "true" && -n "$Public_IPv6" && "$Public_IPv6" != "
         Zone_idv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$Root_domainv6" | jq -r '.result[0].id // empty')
         DNS_IDv6=$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records?type=AAAA&name=$Domainv6" | jq -r '.result[0].id // empty')
 
-        if [[ -n "$Zone_idv6" && -n "$DNS_IDv6" ]]; then
-            cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records/$DNS_IDv6" \
-                "{\"type\":\"AAAA\",\"name\":\"$Domainv6\",\"content\":\"$Public_IPv6\"}" >/dev/null 2>&1
+        if [[ -z "$Zone_idv6" ]]; then
+            Failed_Domainsv6+=("$Domainv6")
+            echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 更新失败: 未找到 Zone($Root_domainv6)，检查权限或域名是否属于该账号" >> "$LOG_FILE"
+            continue
+        fi
+
+        if [[ -z "$DNS_IDv6" ]]; then
+            create_resp=$(cf_api POST "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records" \
+                "{\"type\":\"AAAA\",\"name\":\"$Domainv6\",\"content\":\"$Public_IPv6\",\"ttl\":120,\"proxied\":false}")
+            create_ok=$(echo "$create_resp" | jq -r '.success // false')
+            if [[ "$create_ok" == "true" ]]; then
+                Success_Domainsv6+=("$Domainv6")
+                echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 -> $Public_IPv6 记录不存在，已自动创建" >> "$LOG_FILE"
+            else
+                Failed_Domainsv6+=("$Domainv6")
+                errmsg=$(echo "$create_resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+                echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 创建记录失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
+            fi
+            continue
+        fi
+
+        resp=$(cf_api PUT "https://api.cloudflare.com/client/v4/zones/$Zone_idv6/dns_records/$DNS_IDv6" \
+            "{\"type\":\"AAAA\",\"name\":\"$Domainv6\",\"content\":\"$Public_IPv6\"}")
+        ok=$(echo "$resp" | jq -r '.success // false')
+        if [[ "$ok" == "true" ]]; then
+            Success_Domainsv6+=("$Domainv6")
+            echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 -> $Public_IPv6 更新成功" >> "$LOG_FILE"
+        else
+            Failed_Domainsv6+=("$Domainv6")
+            errmsg=$(echo "$resp" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null)
+            echo "$(date '+%Y-%m-%d %H:%M:%S') [AAAA] $Domainv6 -> $Public_IPv6 更新失败: ${errmsg:-API返回失败}" >> "$LOG_FILE"
         fi
     done
 fi
 
+# ===== 通知：只要本次有成功或失败的域名就发（方便直接在 Telegram 看到失败原因） =====
 if [[ -n "$Telegram_Bot_Token" && -n "$Telegram_Chat_ID" && (
-    ( -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ) ||
-    ( -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" )
+    ${#Success_Domains[@]} -gt 0 || ${#Failed_Domains[@]} -gt 0 ||
+    ${#Success_Domainsv6[@]} -gt 0 || ${#Failed_Domainsv6[@]} -gt 0
 ) ]]; then
     send_telegram_notification
 fi
 
 sleep 3
 
-if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" ]]; then
+# ===== 关键修复：只有该协议下"全部域名都成功且至少成功一个"才推进 Old_Public_IP =====
+# 避免部分域名更新失败时，Old_Public_IPv4 被错误推进，导致下次运行时脚本误以为
+# "IP 没变"从而跳过重试，失败被静默吞掉。
+if [[ -n "$Public_IPv4" && "$Public_IPv4" != "$Old_Public_IPv4" \
+      && ${#Success_Domains[@]} -gt 0 && ${#Failed_Domains[@]} -eq 0 ]]; then
     sed -i "s/^Old_Public_IPv4=.*/Old_Public_IPv4=\"$Public_IPv4\"/" /etc/DDNS/.config
 fi
 
-if [[ -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" ]]; then
+if [[ -n "$Public_IPv6" && "$Public_IPv6" != "$Old_Public_IPv6" \
+      && ${#Success_Domainsv6[@]} -gt 0 && ${#Failed_Domainsv6[@]} -eq 0 ]]; then
     sed -i "s/^Old_Public_IPv6=.*/Old_Public_IPv6=\"$Public_IPv6\"/" /etc/DDNS/.config
 fi
 
@@ -679,12 +760,29 @@ set_cloudflare_api(){
     echo -e "${Tip}开始配置Cloudflare API..."
     echo
     echo -e "${Tip}请选择认证方式："
-    echo -e "  ${GREEN}1${NC}：Global API Key"
-    echo -e "  ${GREEN}2${NC}：API Token"
+    echo -e "  ${GREEN}1${NC}：API Token"
+    echo -e "  ${GREEN}2${NC}：Global API Key"
     read -rp "选择 [1-2]: " auth_mode
 
     case "$auth_mode" in
         1)
+            echo -e "${Tip}请输入您的Cloudflare API Token"
+            read -rp "Token: " Api_Token
+            if [ -z "$Api_Token" ]; then
+                echo -e "${Error}未输入 Token，无法执行操作！"
+                exit 1
+            fi
+            API_TOKEN="$Api_Token"
+
+            sed -i 's/^#\?Cloudflare_Auth_Method=".*"/Cloudflare_Auth_Method="token"/g' /etc/DDNS/.config
+            sed -i 's/^#\?Api_token=".*"/Api_token="'"${API_TOKEN}"'"/g' /etc/DDNS/.config
+            sed -i 's/^#\?Email=".*"/Email=""/g' /etc/DDNS/.config
+            sed -i 's/^#\?Api_key=".*"/Api_key=""/g' /etc/DDNS/.config
+
+            echo -e "${Info}已保存 API Token 认证方式。"
+            echo
+        ;;
+        2)
             echo -e "${Tip}请输入您的Cloudflare邮箱"
             read -rp "邮箱: " EMail
             if [ -z "$EMail" ]; then
@@ -707,23 +805,6 @@ set_cloudflare_api(){
             sed -i 's/^#\?Api_token=".*"/Api_token=""/g' /etc/DDNS/.config
 
             echo -e "${Info}已保存 Global API Key 认证方式。"
-            echo
-        ;;
-        2)
-            echo -e "${Tip}请输入您的Cloudflare API Token"
-            read -rp "Token: " Api_Token
-            if [ -z "$Api_Token" ]; then
-                echo -e "${Error}未输入 Token，无法执行操作！"
-                exit 1
-            fi
-            API_TOKEN="$Api_Token"
-
-            sed -i 's/^#\?Cloudflare_Auth_Method=".*"/Cloudflare_Auth_Method="token"/g' /etc/DDNS/.config
-            sed -i 's/^#\?Api_token=".*"/Api_token="'"${API_TOKEN}"'"/g' /etc/DDNS/.config
-            sed -i 's/^#\?Email=".*"/Email=""/g' /etc/DDNS/.config
-            sed -i 's/^#\?Api_key=".*"/Api_key=""/g' /etc/DDNS/.config
-
-            echo -e "${Info}已保存 API Token 认证方式。"
             echo
         ;;
         *)
